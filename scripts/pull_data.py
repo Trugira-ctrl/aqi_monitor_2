@@ -1,7 +1,7 @@
 import os
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Sensor IDs and their corresponding read keys
@@ -28,8 +28,8 @@ SENSOR_READ_KEYS = {
     '240041': '9M26D1US41I4TIRZ'
 }
 
-def fetch_purpleair_data():
-    """Fetch data from PurpleAir API for all sensors."""
+def fetch_historical_data():
+    """Fetch historical data from PurpleAir API for all sensors."""
     api_key = os.getenv('PURPLEAIR_KEY')
     if not api_key:
         raise ValueError("PURPLEAIR_KEY environment variable is not set")
@@ -38,21 +38,50 @@ def fetch_purpleair_data():
         'X-API-Key': api_key
     }
 
+    # Calculate date range for last 2 weeks
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=14)
+    
+    # Convert to Unix timestamps
+    start_timestamp = int(start_date.timestamp())
+    end_timestamp = int(end_date.timestamp())
+
     all_data = []
     for sensor_id, read_key in SENSOR_READ_KEYS.items():
         try:
             # Build URL with read key for private sensors
-            url = f'https://api.purpleair.com/v1/sensors/{sensor_id}'
+            url = f'https://api.purpleair.com/v1/sensors/{sensor_id}/history'
+            params = {
+                'start_timestamp': start_timestamp,
+                'end_timestamp': end_timestamp,
+                'average': 3600,  # 1-hour averages
+                'fields': 'pm2.5,temperature,humidity,pressure'
+            }
+            
             if read_key:
-                url += f'?read_key={read_key}'
+                params['read_key'] = read_key
             
             # Fetch sensor data
-            response = requests.get(url, headers=headers)
+            print(f"Fetching historical data for sensor {sensor_id}...")
+            response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
             
             sensor_data = response.json()
             sensor_data['sensor_id'] = sensor_id
+            
+            # Get sensor metadata
+            metadata_url = f'https://api.purpleair.com/v1/sensors/{sensor_id}'
+            if read_key:
+                metadata_url += f'?read_key={read_key}'
+            
+            metadata_response = requests.get(metadata_url, headers=headers)
+            metadata_response.raise_for_status()
+            
+            # Combine historical data with metadata
+            sensor_data['metadata'] = metadata_response.json()
             all_data.append(sensor_data)
+            
+            print(f"Successfully fetched data for sensor {sensor_id}")
             
         except requests.exceptions.RequestException as e:
             print(f"Error fetching data for sensor {sensor_id}: {e}")
@@ -66,7 +95,7 @@ def save_raw_data(data):
     raw_dir = Path('data/raw')
     raw_dir.mkdir(parents=True, exist_ok=True)
     
-    output_file = raw_dir / f'purpleair_data_{timestamp}.json'
+    output_file = raw_dir / f'purpleair_historical_data_{timestamp}.json'
     with open(output_file, 'w') as f:
         json.dump(data, f, indent=2)
     
@@ -74,12 +103,18 @@ def save_raw_data(data):
 
 def main():
     try:
-        # Fetch data from PurpleAir
-        data = fetch_purpleair_data()
+        print("Starting historical data fetch...")
+        # Fetch historical data from PurpleAir
+        data = fetch_historical_data()
+        
+        if not data:
+            print("No data was fetched from any sensors")
+            return
         
         # Save raw data
         output_file = save_raw_data(data)
-        print(f"Data saved to {output_file}")
+        print(f"Historical data saved to {output_file}")
+        print(f"Successfully fetched data for {len(data)} sensors")
         
     except Exception as e:
         print(f"Error in data pull: {e}")

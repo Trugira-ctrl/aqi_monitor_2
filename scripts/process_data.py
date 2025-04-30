@@ -24,7 +24,7 @@ def get_latest_raw_data() -> dict:
     if not raw_dir.exists():
         raise FileNotFoundError("No raw data directory found")
     
-    files = list(raw_dir.glob('purpleair_data_*.json'))
+    files = list(raw_dir.glob('purpleair_historical_data_*.json'))
     if not files:
         raise FileNotFoundError("No raw data files found")
     
@@ -33,31 +33,61 @@ def get_latest_raw_data() -> dict:
         return json.load(f)
 
 def process_data(raw_data: list) -> pd.DataFrame:
-    """Process raw PurpleAir data into a DataFrame matching sensor_reports schema."""
+    """Process raw PurpleAir historical data into a DataFrame matching sensor_reports schema."""
     processed_rows = []
     
     for sensor_data in raw_data:
         try:
-            # Extract relevant fields matching sensor_reports table schema
-            row = {
-                'sensor_id': sensor_data['sensor_id'],
-                'latitude': sensor_data['sensor']['latitude'],
-                'longitude': sensor_data['sensor']['longitude'],
-                'last_seen': datetime.fromtimestamp(sensor_data['data_time_stamp']),
-                'pm25': sensor_data['sensor']['pm2_5'],
-                'temperature': sensor_data['sensor']['temperature'],
-                'humidity': sensor_data['sensor']['humidity'],
-                'pressure': sensor_data['sensor']['pressure'],
-                'status': 'active',  # Default status
-                'error': None,  # No error by default
-                'created_at': datetime.now()
-            }
-            processed_rows.append(row)
-        except KeyError as e:
-            print(f"Error processing sensor data: {e}")
+            # Get sensor metadata
+            metadata = sensor_data.get('metadata', {}).get('sensor', {})
+            sensor_id = str(sensor_data.get('sensor_id'))
+            
+            # Get historical data points
+            data_points = sensor_data.get('data', [])
+            timestamps = sensor_data.get('time_stamps', [])
+            
+            if not data_points or not timestamps:
+                print(f"No historical data found for sensor {sensor_id}")
+                continue
+                
+            # Process each data point
+            for timestamp, data_point in zip(timestamps, data_points):
+                try:
+                    row = {
+                        'sensor_id': sensor_id,
+                        'latitude': metadata.get('latitude'),
+                        'longitude': metadata.get('longitude'),
+                        'last_seen': datetime.fromtimestamp(timestamp),
+                        'pm25': data_point[0],  # pm2.5 is first field
+                        'temperature': data_point[1],  # temperature is second field
+                        'humidity': data_point[2],  # humidity is third field
+                        'pressure': data_point[3],  # pressure is fourth field
+                        'status': 'active',
+                        'error': None,
+                        'created_at': datetime.now()
+                    }
+                    
+                    # Only add the row if we have valid coordinates and pm25 data
+                    if (row['latitude'] is not None and 
+                        row['longitude'] is not None and 
+                        row['pm25'] is not None):
+                        processed_rows.append(row)
+                        
+                except (IndexError, TypeError) as e:
+                    print(f"Error processing data point for sensor {sensor_id}: {e}")
+                    continue
+                    
+        except Exception as e:
+            print(f"Error processing sensor {sensor_id}: {e}")
             continue
     
-    return pd.DataFrame(processed_rows)
+    if not processed_rows:
+        print("No valid data points were processed")
+        return pd.DataFrame()
+        
+    df = pd.DataFrame(processed_rows)
+    print(f"Processed {len(df)} data points from {len(raw_data)} sensors")
+    return df
 
 def store_in_supabase(df: pd.DataFrame) -> bool:
     """Store data in Supabase sensor_reports table."""
@@ -71,17 +101,38 @@ def store_in_supabase(df: pd.DataFrame) -> bool:
         return False
     
     try:
-        supabase: Client = create_client(supabase_url, supabase_key)
+        # Initialize Supabase client without proxy
+        supabase: Client = create_client(
+            supabase_url,
+            supabase_key,
+            options={
+                'headers': {
+                    'Authorization': f'Bearer {supabase_key}'
+                }
+            }
+        )
         
         # Convert DataFrame to list of dictionaries
         records = df.to_dict('records')
         
-        # Upsert data into sensor_reports table
-        result = supabase.table('sensor_reports').upsert(
-            records,
-            on_conflict='sensor_id,last_seen'  # Prevent duplicate reports
-        ).execute()
+        if not records:
+            print("No valid records to store")
+            return False
+            
+        # Process in batches to avoid request size limits
+        batch_size = 1000
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i + batch_size]
+            # Upsert data into sensor_reports table
+            result = supabase.table('sensor_reports').upsert(
+                batch,
+                on_conflict='sensor_id,last_seen'  # Prevent duplicate reports
+            ).execute()
+            print(f"Stored batch of {len(batch)} records in Supabase")
+        
+        print(f"Successfully stored all {len(records)} records in Supabase")
         return True
+        
     except Exception as e:
         print(f"Error storing data in Supabase: {e}")
         return False
@@ -115,8 +166,12 @@ def store_in_sheets(df: pd.DataFrame) -> bool:
         if not sheet.get_all_records():
             sheet.append_row(df.columns.tolist())
         
-        # Append data
-        sheet.append_rows(df.values.tolist())
+        # Process in batches to avoid request size limits
+        batch_size = 1000
+        for i in range(0, len(df), batch_size):
+            batch = df.iloc[i:i + batch_size]
+            sheet.append_rows(batch.values.tolist())
+            print(f"Stored batch of {len(batch)} records in Google Sheets")
         
         # Clean up
         creds_file.unlink()
@@ -132,6 +187,10 @@ def main():
         
         # Process data
         df = process_data(raw_data)
+        
+        if df.empty:
+            print("No valid data to store")
+            return
         
         # Store data
         stored = False
