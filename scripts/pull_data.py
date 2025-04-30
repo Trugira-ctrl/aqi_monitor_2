@@ -3,6 +3,7 @@ import json
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
+import time
 
 # Sensor IDs and their corresponding read keys
 SENSOR_READ_KEYS = {
@@ -47,45 +48,79 @@ def fetch_historical_data():
     end_timestamp = int(end_date.timestamp())
 
     all_data = []
-    for sensor_id, read_key in SENSOR_READ_KEYS.items():
-        try:
-            # Build URL with read key for private sensors
-            url = f'https://api.purpleair.com/v1/sensors/{sensor_id}/history'
-            params = {
-                'start_timestamp': start_timestamp,
-                'end_timestamp': end_timestamp,
-                'average': 3600,  # 1-hour averages
-                'fields': 'pm2.5,temperature,humidity,pressure'
-            }
+    
+    # First, get all sensors data in a single request
+    sensor_ids = list(SENSOR_READ_KEYS.keys())
+    sensors_url = 'https://api.purpleair.com/v1/sensors'
+    params = {
+        'fields': 'name,latitude,longitude,pm2.5,temperature,humidity,pressure,last_seen',
+        'sensor_index': ','.join(sensor_ids)
+    }
+    
+    try:
+        print("Fetching current sensor data...")
+        response = requests.get(sensors_url, headers=headers, params=params)
+        response.raise_for_status()
+        sensors_data = response.json()
+        
+        # Now get historical data for each sensor
+        for sensor_id, read_key in SENSOR_READ_KEYS.items():
+            try:
+                print(f"Fetching historical data for sensor {sensor_id}...")
+                
+                # Get historical data
+                history_url = f'https://api.purpleair.com/v1/sensors/{sensor_id}/history'
+                history_params = {
+                    'start_timestamp': start_timestamp,
+                    'end_timestamp': end_timestamp,
+                    'average': 3600,  # 1-hour averages
+                    'fields': 'pm2.5,temperature,humidity,pressure'
+                }
+                
+                if read_key:
+                    history_params['read_key'] = read_key
+                
+                history_response = requests.get(
+                    history_url, 
+                    headers=headers, 
+                    params=history_params
+                )
+                history_response.raise_for_status()
+                
+                # Find the sensor's metadata in the sensors_data response
+                sensor_metadata = next(
+                    (s for s in sensors_data.get('data', []) 
+                     if str(s[0]) == sensor_id),  # sensor_index is first field
+                    None
+                )
+                
+                if sensor_metadata:
+                    # Combine historical data with metadata
+                    sensor_data = {
+                        'sensor_id': sensor_id,
+                        'metadata': {
+                            'name': sensor_metadata[1],  # name
+                            'latitude': sensor_metadata[2],  # latitude
+                            'longitude': sensor_metadata[3],  # longitude
+                            'last_seen': sensor_metadata[8]  # last_seen
+                        },
+                        'history': history_response.json()
+                    }
+                    all_data.append(sensor_data)
+                    print(f"Successfully fetched data for sensor {sensor_id}")
+                else:
+                    print(f"No metadata found for sensor {sensor_id}")
+                
+            except requests.exceptions.RequestException as e:
+                print(f"Error fetching data for sensor {sensor_id}: {e}")
+                continue
             
-            if read_key:
-                params['read_key'] = read_key
+            # Add a small delay between requests to avoid rate limiting
+            time.sleep(1)
             
-            # Fetch sensor data
-            print(f"Fetching historical data for sensor {sensor_id}...")
-            response = requests.get(url, headers=headers, params=params)
-            response.raise_for_status()
-            
-            sensor_data = response.json()
-            sensor_data['sensor_id'] = sensor_id
-            
-            # Get sensor metadata
-            metadata_url = f'https://api.purpleair.com/v1/sensors/{sensor_id}'
-            if read_key:
-                metadata_url += f'?read_key={read_key}'
-            
-            metadata_response = requests.get(metadata_url, headers=headers)
-            metadata_response.raise_for_status()
-            
-            # Combine historical data with metadata
-            sensor_data['metadata'] = metadata_response.json()
-            all_data.append(sensor_data)
-            
-            print(f"Successfully fetched data for sensor {sensor_id}")
-            
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching data for sensor {sensor_id}: {e}")
-            continue
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching sensors data: {e}")
+        raise
 
     return all_data
 
