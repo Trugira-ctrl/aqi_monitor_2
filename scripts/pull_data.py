@@ -30,111 +30,114 @@ SENSOR_READ_KEYS = {
     '240041': '9M26D1US41I4TIRZ'
 }
 
-def fetch_historical_data():
-    """Fetch historical data from PurpleAir API for all sensors."""
+def fetch_sensor_data():
+    """Fetch current data from PurpleAir API for all sensors."""
     api_key = os.getenv('PURPLEAIR_KEY')
     if not api_key:
         raise ValueError("PURPLEAIR_KEY environment variable is not set")
 
     headers = {
-        'X-API-Key': api_key
+        'X-API-Key': api_key,
+        'Content-Type': 'application/json'
     }
 
-    # Calculate date range for last 2 weeks using UTC
-    end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=14)
+    # Fields we want to retrieve
+    fields = [
+        'name',
+        'latitude',
+        'longitude',
+        'pm2.5',
+        'pm2.5_10minute',
+        'pm2.5_30minute',
+        'pm2.5_60minute',
+        'pm2.5_6hour',
+        'pm2.5_24hour',
+        'pm2.5_1week',
+        'temperature',
+        'humidity',
+        'pressure',
+        'last_seen'
+    ]
     
-    # Convert to Unix timestamps (in seconds)
-    start_timestamp = int(start_date.timestamp())
-    end_timestamp = int(end_date.timestamp())
-
-    print(f"Fetching data from {start_date} to {end_date} (UTC)")
-    print(f"Using timestamps: start={start_timestamp}, end={end_timestamp}")
-
     all_data = []
     
-    # First, get all sensors data in a single request
-    sensor_ids = list(SENSOR_READ_KEYS.keys())
-    sensors_url = 'https://api.purpleair.com/v1/sensors'
-    params = {
-        'fields': 'name,latitude,longitude,pm2.5,temperature,humidity,pressure,last_seen',
-        'sensor_index': ','.join(sensor_ids)
-    }
-    
     try:
-        print("Fetching current sensor data...")
-        response = requests.get(sensors_url, headers=headers, params=params)
-        response.raise_for_status()
-        sensors_data = response.json()
+        # First, create a group for our sensors
+        group_name = f"aqs_sensors_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        group_data = {
+            'name': group_name
+        }
         
-        # Now get historical data for each sensor
+        # Create the group
+        group_response = requests.post(
+            'https://api.purpleair.com/v1/groups',
+            headers=headers,
+            json=group_data
+        )
+        group_response.raise_for_status()
+        group_id = group_response.json()['id']
+        
+        # Add sensors to the group
         for sensor_id, read_key in SENSOR_READ_KEYS.items():
-            try:
-                print(f"Fetching historical data for sensor {sensor_id}...")
-                
-                # Get historical data
-                history_url = f'https://api.purpleair.com/v1/sensors/{sensor_id}/history'
-                history_params = {
-                    'start_timestamp': start_timestamp,
-                    'end_timestamp': end_timestamp,
-                    'average': 3600,  # 1-hour averages
-                    'fields': 'pm2.5,temperature,humidity,pressure'
-                }
-                
-                if read_key:
-                    history_params['read_key'] = read_key
-                
-                history_response = requests.get(
-                    history_url, 
-                    headers=headers, 
-                    params=history_params
-                )
-                history_response.raise_for_status()
-                
-                # Find the sensor's metadata in the sensors_data response
-                sensor_metadata = next(
-                    (s for s in sensors_data.get('data', []) 
-                     if str(s[0]) == sensor_id),  # sensor_index is first field
-                    None
-                )
-                
-                if sensor_metadata:
-                    # Combine historical data with metadata
-                    sensor_data = {
-                        'sensor_id': sensor_id,
-                        'metadata': {
-                            'name': sensor_metadata[1],  # name
-                            'latitude': sensor_metadata[2],  # latitude
-                            'longitude': sensor_metadata[3],  # longitude
-                            'last_seen': sensor_metadata[8]  # last_seen
-                        },
-                        'history': history_response.json()
-                    }
-                    all_data.append(sensor_data)
-                    print(f"Successfully fetched data for sensor {sensor_id}")
-                else:
-                    print(f"No metadata found for sensor {sensor_id}")
-                
-            except requests.exceptions.RequestException as e:
-                print(f"Error fetching data for sensor {sensor_id}: {e}")
-                continue
+            member_data = {
+                'sensor_index': sensor_id,
+                'read_key': read_key
+            }
             
-            # Add a small delay between requests to avoid rate limiting
+            member_response = requests.post(
+                f'https://api.purpleair.com/v1/groups/{group_id}/members',
+                headers=headers,
+                json=member_data
+            )
+            member_response.raise_for_status()
+            
+            # Add delay to avoid rate limiting
             time.sleep(1)
-            
+        
+        # Get data for all sensors in the group
+        params = {
+            'fields': ','.join(fields)
+        }
+        
+        group_data_response = requests.get(
+            f'https://api.purpleair.com/v1/groups/{group_id}',
+            headers=headers,
+            params=params
+        )
+        group_data_response.raise_for_status()
+        
+        # Process the response
+        response_data = group_data_response.json()
+        if 'data' in response_data:
+            for sensor_data in response_data['data']:
+                processed_data = dict(zip(fields, sensor_data))
+                all_data.append(processed_data)
+        
+        # Clean up - delete the group
+        requests.delete(
+            f'https://api.purpleair.com/v1/groups/{group_id}',
+            headers=headers
+        )
+        
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching sensors data: {e}")
+        print(f"Error in API request: {e}")
+        if hasattr(e.response, 'text'):
+            print(f"Response content: {e.response.text}")
         raise
-
+    
     return all_data
 
 def save_raw_data(data):
     """Save raw data to JSON file with timestamp."""
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    if not data:
+        print("No data to save")
+        return None
+        
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     raw_dir = Path('data/raw')
     raw_dir.mkdir(parents=True, exist_ok=True)
     
-    output_file = raw_dir / f'purpleair_historical_data_{timestamp}.json'
+    output_file = raw_dir / f'purpleair_data_{timestamp}.json'
     with open(output_file, 'w') as f:
         json.dump(data, f, indent=2)
     
@@ -142,9 +145,9 @@ def save_raw_data(data):
 
 def main():
     try:
-        print("Starting historical data fetch...")
-        # Fetch historical data from PurpleAir
-        data = fetch_historical_data()
+        print("Starting data fetch...")
+        # Fetch data from PurpleAir
+        data = fetch_sensor_data()
         
         if not data:
             print("No data was fetched from any sensors")
@@ -152,8 +155,9 @@ def main():
         
         # Save raw data
         output_file = save_raw_data(data)
-        print(f"Historical data saved to {output_file}")
-        print(f"Successfully fetched data for {len(data)} sensors")
+        if output_file:
+            print(f"Data saved to {output_file}")
+            print(f"Successfully fetched data for {len(data)} sensors")
         
     except Exception as e:
         print(f"Error in data pull: {e}")
