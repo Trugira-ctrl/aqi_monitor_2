@@ -32,9 +32,11 @@ SENSOR_READ_KEYS = {
 
 def fetch_sensor_data():
     """Fetch current data from PurpleAir API for all sensors."""
+    print("Starting sensor data fetch...")
     read_api_key = os.getenv('PURPLEAIR_READ_KEY')
     if not read_api_key:
         raise ValueError("PURPLEAIR_READ_KEY environment variable must be set")
+    print("API key found, proceeding with data fetch...")
 
     # Fields we want to retrieve
     fields = [
@@ -59,27 +61,32 @@ def fetch_sensor_data():
         'Content-Type': 'application/json'
     }
     
-    params = {
+    base_params = {
         'fields': ','.join(fields)
     }
     
     all_data = []
+    successful_fetches = 0
     
     try:
         for sensor_id, read_key in SENSOR_READ_KEYS.items():
             try:
-                print(f"Fetching data for sensor {sensor_id}...")
+                print(f"\nFetching data for sensor {sensor_id}...")
                 
-                # Add read key to params if available
+                # Create a new params dict for each request
+                params = base_params.copy()
                 if read_key:
                     params['read_key'] = read_key
+                    print(f"Using read key for sensor {sensor_id}")
                 
                 # Make request for individual sensor
-                response = requests.get(
-                    f'https://api.purpleair.com/v1/sensors/{sensor_id}',
-                    headers=headers,
-                    params=params
-                )
+                url = f'https://api.purpleair.com/v1/sensors/{sensor_id}'
+                print(f"Request URL: {url}")
+                print(f"Request params: {params}")
+                
+                response = requests.get(url, headers=headers, params=params)
+                print(f"Response status code: {response.status_code}")
+                
                 response.raise_for_status()
                 
                 sensor_data = response.json()
@@ -87,16 +94,14 @@ def fetch_sensor_data():
                     processed_data = sensor_data['sensor']
                     processed_data['sensor_id'] = sensor_id
                     all_data.append(processed_data)
+                    successful_fetches += 1
                     print(f"Successfully fetched data for sensor {sensor_id}")
                 else:
                     print(f"No data found for sensor {sensor_id}")
                 
-                # Remove read key from params for next iteration
-                if 'read_key' in params:
-                    del params['read_key']
-                
                 # Add delay to avoid rate limiting
-                time.sleep(2)  # Increased delay to be safe
+                print("Waiting 2 seconds before next request...")
+                time.sleep(2)
                 
             except requests.exceptions.RequestException as e:
                 print(f"Error fetching data for sensor {sensor_id}: {e}")
@@ -108,6 +113,7 @@ def fetch_sensor_data():
         print(f"Error in data fetch: {e}")
         raise
     
+    print(f"\nData fetch completed. Successfully fetched data for {successful_fetches} out of {len(SENSOR_READ_KEYS)} sensors.")
     return all_data
 
 def save_raw_data(data):
