@@ -33,10 +33,8 @@ SENSOR_READ_KEYS = {
 def fetch_sensor_data():
     """Fetch current data from PurpleAir API for all sensors."""
     read_api_key = os.getenv('PURPLEAIR_READ_KEY')
-    write_api_key = os.getenv('PURPLEAIR_WRITE_KEY')
-    
-    if not read_api_key or not write_api_key:
-        raise ValueError("Both PURPLEAIR_READ_KEY and PURPLEAIR_WRITE_KEY environment variables must be set")
+    if not read_api_key:
+        raise ValueError("PURPLEAIR_READ_KEY environment variable must be set")
 
     # Fields we want to retrieve
     fields = [
@@ -56,80 +54,58 @@ def fetch_sensor_data():
         'last_seen'
     ]
     
+    headers = {
+        'X-API-Key': read_api_key,
+        'Content-Type': 'application/json'
+    }
+    
+    params = {
+        'fields': ','.join(fields)
+    }
+    
     all_data = []
     
     try:
-        # First, create a group for our sensors using WRITE key
-        group_name = f"aqs_sensors_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-        group_data = {
-            'name': group_name
-        }
-        
-        write_headers = {
-            'X-API-Key': write_api_key,
-            'Content-Type': 'application/json'
-        }
-        
-        # Create the group
-        group_response = requests.post(
-            'https://api.purpleair.com/v1/groups',
-            headers=write_headers,
-            json=group_data
-        )
-        group_response.raise_for_status()
-        group_id = group_response.json()['id']
-        
-        # Add sensors to the group
         for sensor_id, read_key in SENSOR_READ_KEYS.items():
-            member_data = {
-                'sensor_index': sensor_id,
-                'read_key': read_key
-            }
+            try:
+                print(f"Fetching data for sensor {sensor_id}...")
+                
+                # Add read key to params if available
+                if read_key:
+                    params['read_key'] = read_key
+                
+                # Make request for individual sensor
+                response = requests.get(
+                    f'https://api.purpleair.com/v1/sensors/{sensor_id}',
+                    headers=headers,
+                    params=params
+                )
+                response.raise_for_status()
+                
+                sensor_data = response.json()
+                if 'sensor' in sensor_data:
+                    processed_data = sensor_data['sensor']
+                    processed_data['sensor_id'] = sensor_id
+                    all_data.append(processed_data)
+                    print(f"Successfully fetched data for sensor {sensor_id}")
+                else:
+                    print(f"No data found for sensor {sensor_id}")
+                
+                # Remove read key from params for next iteration
+                if 'read_key' in params:
+                    del params['read_key']
+                
+                # Add delay to avoid rate limiting
+                time.sleep(2)  # Increased delay to be safe
+                
+            except requests.exceptions.RequestException as e:
+                print(f"Error fetching data for sensor {sensor_id}: {e}")
+                if hasattr(e.response, 'text'):
+                    print(f"Response content: {e.response.text}")
+                continue
             
-            member_response = requests.post(
-                f'https://api.purpleair.com/v1/groups/{group_id}/members',
-                headers=write_headers,
-                json=member_data
-            )
-            member_response.raise_for_status()
-            
-            # Add delay to avoid rate limiting
-            time.sleep(1)
-        
-        # Get data for all sensors in the group using READ key
-        read_headers = {
-            'X-API-Key': read_api_key,
-            'Content-Type': 'application/json'
-        }
-        
-        params = {
-            'fields': ','.join(fields)
-        }
-        
-        group_data_response = requests.get(
-            f'https://api.purpleair.com/v1/groups/{group_id}',
-            headers=read_headers,
-            params=params
-        )
-        group_data_response.raise_for_status()
-        
-        # Process the response
-        response_data = group_data_response.json()
-        if 'data' in response_data:
-            for sensor_data in response_data['data']:
-                processed_data = dict(zip(fields, sensor_data))
-                all_data.append(processed_data)
-        
-        # Clean up - delete the group using WRITE key
-        requests.delete(
-            f'https://api.purpleair.com/v1/groups/{group_id}',
-            headers=write_headers
-        )
-        
-    except requests.exceptions.RequestException as e:
-        print(f"Error in API request: {e}")
-        if hasattr(e.response, 'text'):
-            print(f"Response content: {e.response.text}")
+    except Exception as e:
+        print(f"Error in data fetch: {e}")
         raise
     
     return all_data
