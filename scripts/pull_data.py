@@ -4,6 +4,7 @@ import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 import time
+from datetime import timezone
 
 # Sensor IDs and their corresponding read keys
 SENSOR_READ_KEYS = {
@@ -39,13 +40,16 @@ def fetch_historical_data():
         'X-API-Key': api_key
     }
 
-    # Calculate date range for last 2 weeks
-    end_date = datetime.now()
+    # Calculate date range for last 2 weeks using UTC
+    end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=14)
     
-    # Convert to Unix timestamps
+    # Convert to Unix timestamps (in seconds)
     start_timestamp = int(start_date.timestamp())
     end_timestamp = int(end_date.timestamp())
+
+    print(f"Fetching data from {start_date} to {end_date} (UTC)")
+    print(f"Using timestamps: start={start_timestamp}, end={end_timestamp}")
 
     all_data = []
     
