@@ -33,7 +33,8 @@ jobs:
     - name: Pull PurpleAir data
       id: pull_data
       env:
-        PURPLEAIR_KEY: ${{ secrets.PURPLEAIR_KEY }}
+        PURPLEAIR_READ_KEY: ${{ secrets.PURPLEAIR_READ_KEY }}
+        PURPLEAIR_WRITE_KEY: ${{ secrets.PURPLEAIR_WRITE_KEY }}
       run: |
         python scripts/pull_data.py
         # Check if data was pulled successfully
