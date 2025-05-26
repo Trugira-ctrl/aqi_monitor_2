@@ -52,12 +52,13 @@ interface GeoJSONData {
   features: GeoJSONFeature[];
 }
 
+// Updated SENSOR_IDS array to include all 38 sensors
 const SENSOR_IDS = [
-  '240075', '240049', '239257', '239297', 
-  '239307', '239267', '240595', '239259', 
-  '240067', '222835', '222887', '222861',
-  '240091', '240097', '240593', '240083',
-  '239301', '240063', '235227', '240041'
+  '222861', '234741', '234747', '235227', '222867', '222887', '222835', '234727',
+  '234737', '234749', '239265', '240053', '240091', '240593', '239301', '240067',
+  '239259', '239309', '240595', '240061', '240059', '240063', '239249', '240083',
+  '239267', '239307', '240065', '240047', '240041', '239297', '240097', '240587',
+  '239257', '240093', '240057', '240049', '240071', '240075'
 ];
 
 const RWANDA_CENTER: [number, number] = [-2.0, 30.0];
@@ -300,6 +301,9 @@ function App() {
         location: findLocation(sensor.latitude, sensor.longitude)
       }));
 
+      // Log sensor data for debugging
+      console.log("Sensor Data:", sensorsWithLocation);
+
       setSensorData(sensorsWithLocation);
     } catch (err) {
       setError(`Failed to fetch sensor data: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -462,7 +466,7 @@ function App() {
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
                 {sensorData.map(sensor => (
-                  sensor.latitude && sensor.longitude ? (
+                  sensor.latitude != null && sensor.longitude != null ? (
                     <Marker
                       key={sensor.id}
                       position={[sensor.latitude, sensor.longitude]}
